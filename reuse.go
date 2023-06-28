@@ -2,15 +2,16 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/sys/unix"
 )
@@ -21,7 +22,6 @@ var (
 )
 
 func main() {
-	// Unique UUID for this server process
 	id = uuid.New()
 
 	netConfig := net.ListenConfig{
@@ -33,7 +33,13 @@ func main() {
 		log.Fatalf("failed to create listener: %v", err)
 	}
 
-	server := &http.Server{Handler: setupRouters()}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, "Server %s\n", id)
+	})
+	mux.HandleFunc("/wait", waitHandler)
+
+	server := &http.Server{Handler: mux}
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("failed to serve on %s: %v", serverAddress, err)
@@ -43,7 +49,7 @@ func main() {
 	<-handleSystemSignals(server)
 }
 
-//handleSystemSignals capture unix SIGINT and SIGTERM to gracefully shutdown the server process
+// handleSystemSignals capture unix SIGINT and SIGTERM to gracefully shutdown the server process
 func handleSystemSignals(s *http.Server) chan bool {
 	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)
@@ -69,7 +75,7 @@ func handleSystemSignals(s *http.Server) chan bool {
 	return done
 }
 
-//netControl is a Control function for net.ListenConfig that enables unix socket reuse for port and address.
+// netControl is a Control function for net.ListenConfig that enables unix socket reuse for port and address.
 func netControl(network, address string, c syscall.RawConn) error {
 	var err error
 	c.Control(func(fd uintptr) {
@@ -86,32 +92,18 @@ func netControl(network, address string, c syscall.RawConn) error {
 	return err
 }
 
-func setupRouters() *gin.Engine {
-	router := gin.Default()
-	router.GET("/", rootHandler)
-	router.GET("/wait", waitHandler)
-	return router
-}
-
-func rootHandler(ctx *gin.Context) {
-	ctx.JSON(http.StatusOK, gin.H{
-		"server": id.String(),
-	})
-}
-
-func waitHandler(ctx *gin.Context) {
-	waitTime := ctx.DefaultQuery("time", "1s")
+func waitHandler(w http.ResponseWriter, r *http.Request) {
+	u, _ := url.Parse(r.URL.String())
+	queryParams := u.Query()
+	waitTime := queryParams.Get("time")
 
 	duration, err := time.ParseDuration(waitTime)
 	if err != nil {
-		ctx.AbortWithError(http.StatusBadRequest, err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Simulate a long running task.
+
 	time.Sleep(duration)
 
-	ctx.JSON(http.StatusOK, gin.H{
-		"server":    id.String(),
-		"waitedFor": duration.String(),
-	})
+	_, _ = fmt.Fprintf(w, "Server %s waited for: %s\n", id, duration.String())
 }
